@@ -1,0 +1,11 @@
+"ID","Email Type","Recipient","Subject","Body","Context","AI Provider","AI Model","Prompt Tokens","Completion Tokens","Created At"
+"85f54fd4-7ec9-47c5-9ec4-22294da0ab8a","invitation","Mario Rossi direttore marketing","Riduci i tempi di gestione email del 70% con la nostra soluzione AI","Gentile Mario Rossi, direttore marketing,
+
+Spero che questo messaggio ti trovi bene. Mi sto rivolgendo a te oggi per presentarti una proposta innovativa che potrebbe rivoluzionare il modo in cui la tua azienda gestisce le email. La nostra società ha sviluppato un software di gestione email basato sull'intelligenza artificiale (AI) che può ridurre i tempi di gestione del 70%.
+
+Il nostro sistema utilizza algoritmi avanzati per automatizzare le risposte alle email, categorizzare i messaggi e fornire insights preziosi sulla comunicazione con i clienti. Ciò significa che il tuo team potrà concentrarsi su attività più strategiche e di alto valore, migliorando l'efficienza e la produttività.
+
+Saremmo lieti di discutere come il nostro software possa essere personalizzato per soddisfare le esigenze specifiche della tua azienda. Se sei interessato, ti invito a rispondere a questo messaggio per fissare una demo o una chiamata per discutere ulteriormente.
+
+Cordiali saluti,
+Il tuo nome","Proposta per software di gestione email AI, riduce i tempi del 70%","groq","llama-3.3-70b-versatile","146","300","2026-05-06 10:47:56.387006+00:00"
