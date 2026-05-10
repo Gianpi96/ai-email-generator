@@ -24,6 +24,8 @@ dependencies = [
     "tenacity>=8.4.1",
     "structlog>=24.2.0",
     "prometheus-fastapi-instrumentator>=7.0.0",
+    "slowapi>=0.1.9",
+    "packaging>=23.0",
 ]
 
 [project.optional-dependencies]

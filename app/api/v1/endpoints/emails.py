@@ -6,11 +6,12 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import CurrentUser
+from app.core.rate_limit import AI_RATE_LIMIT, limiter
 from app.db.session import get_db
 from app.schemas.schemas import (
     EMAIL_TYPES,
@@ -26,7 +27,7 @@ from app.services.email_service import EmailService
 router = APIRouter(prefix="/emails", tags=["Emails"])
 
 
-# ── Generate ──────────────────────────────────────────────────────────────────
+# ── Generate (rate limited: 10/min per IP) ────────────────────────────────────
 
 
 @router.post(
@@ -37,20 +38,24 @@ router = APIRouter(prefix="/emails", tags=["Emails"])
     description=(
         "Selects the prompt template matching `email_type`, calls the configured "
         "AI provider, logs the full request (prompt, response, cost, duration) "
-        "to the audit log, and persists the generated email."
+        "to the audit log, and persists the generated email.\n\n"
+        "**Rate limit:** 10 requests/minute per IP."
     ),
 )
+@limiter.limit(AI_RATE_LIMIT)
 async def generate_email(
-    request: GenerateEmailRequest,
+    request: Request,  # richiesto da slowapi per leggere l'IP
+    response: Response,  # richiesto da slowapi per iniettare gli header X-RateLimit-*
+    body: GenerateEmailRequest,
     current_user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     ai: Annotated[AIProvider, Depends(get_ai_provider)],
 ) -> GeneratedEmailResponse:
     service = AIService(db=db, ai=ai)
-    return await service.generate_and_save(request, user_id=current_user.id)
+    return await service.generate_and_save(body, user_id=current_user.id)
 
 
-# ── History with filters ──────────────────────────────────────────────────────
+# ── History with filters (rate limited: default 100/min) ─────────────────────
 
 
 @router.get(
@@ -69,22 +74,22 @@ Returns a paginated list of generated emails for the current user.
 **Sorting:**
 - `sort_by` — field to sort by: `created_at`, `email_type`, `recipient`, `subject`
 - `sort_order` — `asc` or `desc` (default: `desc`)
+
+**Rate limit:** 100 requests/minute per IP.
     """,
 )
 async def get_history(
     current_user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
-    # Pagination
     page: int = Query(default=1, ge=1, description="Page number"),
     page_size: int = Query(default=20, ge=1, le=100, description="Items per page"),
-    # Filters
     email_type: str | None = Query(
         default=None,
         description=f"Filter by email type. One of: {', '.join(EMAIL_TYPES)}",
     ),
     date_from: datetime | None = Query(
         default=None,
-        description="Filter emails created after this date (ISO 8601, e.g. 2026-01-01T00:00:00)",
+        description="Filter emails created after this date (ISO 8601)",
     ),
     date_to: datetime | None = Query(
         default=None,
@@ -99,7 +104,6 @@ async def get_history(
         default=None,
         description="Filter by AI provider (groq, openai, anthropic)",
     ),
-    # Sorting
     sort_by: str = Query(
         default="created_at",
         description="Sort field: created_at | email_type | recipient | subject",
@@ -133,19 +137,16 @@ async def get_history(
     description="""
 Downloads all matching emails as a UTF-8 CSV file.
 
-Accepts the **same filters** as `GET /history` (email_type, date_from, date_to, search, ai_provider).
-Uses **StreamingResponse** — the file is streamed in batches of 100 rows,
-so it works efficiently even with thousands of emails.
+Accepts the **same filters** as `GET /history`.
+Uses **StreamingResponse** — streamed in batches of 100 rows.
 
-The CSV includes: ID, Email Type, Recipient, Subject, Body, Context,
-AI Provider, AI Model, Prompt Tokens, Completion Tokens, Created At.
+**Rate limit:** 100 requests/minute per IP.
     """,
     response_class=StreamingResponse,
 )
 async def export_history_csv(
     current_user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
-    # Same filters as /history
     email_type: str | None = Query(default=None),
     date_from: datetime | None = Query(default=None),
     date_to: datetime | None = Query(default=None),
@@ -156,7 +157,7 @@ async def export_history_csv(
 ) -> StreamingResponse:
     filters = HistoryFilters(
         page=1,
-        page_size=100,  # ignored in streaming export
+        page_size=100,
         email_type=email_type,
         date_from=date_from,
         date_to=date_to,
@@ -165,10 +166,7 @@ async def export_history_csv(
         sort_by=sort_by,
         sort_order=sort_order,
     )
-
     service = EmailService(db=db)
-
-    # Build filename with active filters
     date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     type_part = f"_{email_type}" if email_type else ""
     filename = f"emails{type_part}_{date_str}.csv"
@@ -176,21 +174,7 @@ async def export_history_csv(
     return StreamingResponse(
         service.export_csv_stream(current_user.id, filters),
         media_type="text/csv; charset=utf-8",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "X-Export-Filters": str(
-                {
-                    k: v
-                    for k, v in {
-                        "email_type": email_type,
-                        "date_from": str(date_from) if date_from else None,
-                        "date_to": str(date_to) if date_to else None,
-                        "search": search,
-                    }.items()
-                    if v
-                }
-            ),
-        },
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -200,11 +184,6 @@ async def export_history_csv(
 @router.get(
     "/logs",
     summary="AI request audit logs — prompt, cost, errors",
-    description=(
-        "Returns recent AI request logs for the current user. "
-        "Each entry includes the exact prompt used, token count, "
-        "estimated cost in USD, duration, and error details if any."
-    ),
 )
 async def get_ai_logs(
     current_user: CurrentUser,
@@ -219,10 +198,8 @@ async def get_ai_logs(
 ) -> list[dict]:
     service = AIService(db=db, ai=ai)
     logs = await service.get_request_logs(current_user.id, limit=limit)
-
     if status_filter:
         logs = [l for l in logs if l.status == status_filter]
-
     return [
         {
             "id": str(log.id),

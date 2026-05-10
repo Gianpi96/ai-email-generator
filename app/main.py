@@ -9,13 +9,18 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.api.v1.router import api_router
 from app.core.exceptions import AppError
 from app.core.logging import configure_logging, get_logger
+from app.core.middleware import RequestLoggingMiddleware, setup_request_logger
+from app.core.rate_limit import limiter
 from app.core.settings import get_settings
 from app.db.session import engine
-from app.models.models import Base  # noqa: F401 — needed to register tables
+from app.models.models import Base  # noqa: F401
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -24,9 +29,9 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     configure_logging()
+    setup_request_logger()
     logger.info("Starting up", env=settings.app_env)
 
-    # Create tables (use Alembic migrations in production)
     if settings.app_env != "production":
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -48,7 +53,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # ── Middleware ─────────────────────────────────────────────────────────────
+    # ── Rate limiter state ────────────────────────────────────────────────────
+    # slowapi richiede che il limiter sia accessibile come app.state.limiter
+    app.state.limiter = limiter
+
+    # ── Middleware (ordine importante: il primo aggiunto è l'ultimo eseguito) ──
+
+    # 1. CORS — deve essere il più esterno
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -57,7 +68,29 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # 2. Rate limiting — slowapi middleware
+    app.add_middleware(SlowAPIMiddleware)
+
+    # 3. Request logging — logga ogni richiesta con metodo, path, status, tempo
+    app.add_middleware(RequestLoggingMiddleware)
+
     # ── Exception handlers ────────────────────────────────────────────────────
+
+    @app.exception_handler(RateLimitExceeded)
+    async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+        """
+        Handler personalizzato per rate limit superato.
+        Restituisce 429 con messaggio chiaro e header Retry-After.
+        """
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "detail": "Too many requests. Please slow down.",
+                "limit": str(exc.detail),
+            },
+            headers={"Retry-After": "60"},
+        )
+
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
         logger.warning("Application error", detail=exc.detail, path=request.url.path)
