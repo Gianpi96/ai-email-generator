@@ -8,7 +8,7 @@ import io
 import math
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
+from datetime import timezone
 
 from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,17 +26,17 @@ logger = get_logger(__name__)
 
 # CSV columns and their labels
 _CSV_COLUMNS = [
-    ("id", "ID"),
-    ("email_type", "Email Type"),
-    ("recipient", "Recipient"),
-    ("subject", "Subject"),
-    ("body", "Body"),
-    ("context", "Context"),
-    ("ai_provider", "AI Provider"),
-    ("ai_model", "AI Model"),
-    ("prompt_tokens", "Prompt Tokens"),
+    ("id",                "ID"),
+    ("email_type",        "Email Type"),
+    ("recipient",         "Recipient"),
+    ("subject",           "Subject"),
+    ("body",              "Body"),
+    ("context",           "Context"),
+    ("ai_provider",       "AI Provider"),
+    ("ai_model",          "AI Model"),
+    ("prompt_tokens",     "Prompt Tokens"),
     ("completion_tokens", "Completion Tokens"),
-    ("created_at", "Created At"),
+    ("created_at",        "Created At"),
 ]
 
 
@@ -126,8 +126,7 @@ class EmailService:
 
         # Build filters_applied metadata for response
         filters_applied = {
-            k: v
-            for k, v in {
+            k: v for k, v in {
                 "email_type": filters.email_type,
                 "date_from": filters.date_from.isoformat() if filters.date_from else None,
                 "date_to": filters.date_to.isoformat() if filters.date_to else None,
@@ -135,8 +134,7 @@ class EmailService:
                 "ai_provider": filters.ai_provider,
                 "sort_by": filters.sort_by,
                 "sort_order": filters.sort_order,
-            }.items()
-            if v is not None
+            }.items() if v is not None
         }
 
         logger.info(
@@ -156,7 +154,9 @@ class EmailService:
             filters_applied=filters_applied,
         )
 
-    async def get_by_id(self, email_id: uuid.UUID, user_id: uuid.UUID) -> GeneratedEmailResponse:
+    async def get_by_id(
+        self, email_id: uuid.UUID, user_id: uuid.UUID
+    ) -> GeneratedEmailResponse:
         row = await self._db.get(GeneratedEmail, email_id)
         if not row or row.user_id != user_id:
             raise NotFoundError("Email not found.")
@@ -207,12 +207,10 @@ class EmailService:
             writer = csv.writer(batch_buf, quoting=csv.QUOTE_ALL)
 
             for row in rows:
-                writer.writerow(
-                    [
-                        str(getattr(row, field)) if getattr(row, field) is not None else ""
-                        for field, _ in _CSV_COLUMNS
-                    ]
-                )
+                writer.writerow([
+                    str(getattr(row, field)) if getattr(row, field) is not None else ""
+                    for field, _ in _CSV_COLUMNS
+                ])
 
             yield batch_buf.getvalue()
             total_exported += len(rows)

@@ -199,7 +199,7 @@ async def get_ai_logs(
     service = AIService(db=db, ai=ai)
     logs = await service.get_request_logs(current_user.id, limit=limit)
     if status_filter:
-        logs = [l for l in logs if l.status == status_filter]
+        logs = [log for log in logs if log.status == status_filter]
     return [
         {
             "id": str(log.id),
