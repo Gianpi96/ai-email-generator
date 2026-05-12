@@ -47,3 +47,26 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
         finally:
             await session.close()
+
+
+async def get_audit_db() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Sessione DB separata e indipendente per l'audit log.
+
+    Problema risolto: quando una chiamata AI fallisce, il get_db principale
+    fa rollback di tutta la transazione — incluso il AIRequestLog dell'errore.
+    Questo significa che i log degli errori vengono persi silenziosamente.
+
+    Soluzione: usare una sessione separata per scrivere i log di errore,
+    con il proprio commit/rollback indipendente dalla sessione principale.
+    Così anche se la request fallisce con 500, il log viene sempre salvato.
+    """
+    async with AsyncSessionFactory() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()

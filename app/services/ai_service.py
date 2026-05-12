@@ -4,21 +4,21 @@ AIService — the core orchestration layer for AI email generation.
 Responsibilities:
   1. Select the correct prompt template based on email_type
   2. Call the AI provider via AIProvider protocol
-  3. Log every request to AIRequestLog (prompt, response, cost, errors)
-  4. Persist the generated email to GeneratedEmail
+  3. Log every request to AIRequestLog (always, even on error)
+  4. Persist the generated email to GeneratedEmail (only on success)
   5. Return a structured response to the caller
 
+Key design decision — dual session pattern:
+  - self._db      : sessione principale per GeneratedEmail
+  - self._audit_db: sessione SEPARATA per AIRequestLog
+
+  Questo garantisce che i log degli errori vengano sempre salvati,
+  anche quando la sessione principale fa rollback per un errore AI.
+  Senza questa separazione, i log degli errori verrebbero persi silenziosamente.
+
 Prompt templates available:
-  - formal        : Professional, structured, respectful tone
-  - commercial    : Persuasive, benefit-focused, call-to-action
-  - follow_up     : Friendly reminder, references previous contact
-  - complaint     : Assertive but polite, clear resolution request
-  - introduction  : Warm, concise, context-setting first contact
-  - thank_you     : Genuine appreciation, specific acknowledgment
-  - cold_outreach : Hook-first, value proposition, low-friction CTA
-  - apology       : Accountable, empathetic, solution-oriented
-  - invitation    : Engaging, clear details, RSVP-focused
-  - informal      : Casual, conversational, friendly
+  - formal, commercial, follow_up, complaint, introduction
+  - thank_you, cold_outreach, apology, invitation, informal
 """
 
 import json
@@ -26,6 +26,7 @@ import time
 import uuid
 from dataclasses import dataclass
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AIProviderError, AIProviderRateLimitError, AIProviderTimeoutError
@@ -40,19 +41,16 @@ settings = get_settings()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Cost estimation tables (USD per 1M tokens — approximated for common models)
+# Cost estimation (USD per 1M tokens)
 # ─────────────────────────────────────────────────────────────────────────────
 
 _COST_PER_1M_INPUT: dict[str, float] = {
-    # Groq (free tier — cost is effectively $0, tracked for consistency)
     "llama-3.3-70b-versatile": 0.0,
     "llama-3.1-8b-instant": 0.0,
     "mixtral-8x7b-32768": 0.0,
-    # OpenAI
     "gpt-4o": 2.50,
     "gpt-4o-mini": 0.15,
     "gpt-3.5-turbo": 0.50,
-    # Anthropic
     "claude-sonnet-4-20250514": 3.00,
     "claude-haiku-4-5-20251001": 0.25,
 }
@@ -70,12 +68,10 @@ _COST_PER_1M_OUTPUT: dict[str, float] = {
 
 
 def _estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    """Estimate cost in USD based on token usage and model pricing."""
     input_rate = _COST_PER_1M_INPUT.get(model, 2.50)
     output_rate = _COST_PER_1M_OUTPUT.get(model, 10.00)
     return round(
-        (prompt_tokens * input_rate / 1_000_000)
-        + (completion_tokens * output_rate / 1_000_000),
+        (prompt_tokens * input_rate / 1_000_000) + (completion_tokens * output_rate / 1_000_000),
         8,
     )
 
@@ -83,6 +79,7 @@ def _estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> fl
 # ─────────────────────────────────────────────────────────────────────────────
 # Prompt Templates
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @dataclass(frozen=True)
 class PromptTemplate:
@@ -93,7 +90,6 @@ class PromptTemplate:
 
 
 _TEMPLATES: dict[str, PromptTemplate] = {
-
     "formal": PromptTemplate(
         name="formal",
         system_context=(
@@ -103,224 +99,127 @@ _TEMPLATES: dict[str, PromptTemplate] = {
         ),
         instruction=(
             "Write a formal business email. Use professional salutations and closings. "
-            "Maintain a respectful, neutral tone throughout. Structure the email with "
-            "a clear opening statement, body paragraphs for each point, and a definitive closing."
+            "Maintain a respectful, neutral tone throughout."
         ),
         style_guidelines=(
             "- Use 'Dear [Title] [Name]' as salutation\n"
-            "- Avoid contractions (use 'I am' not 'I'm')\n"
-            "- Use passive voice where appropriate for objectivity\n"
+            "- Avoid contractions\n"
             "- Close with 'Yours sincerely' or 'Kind regards'\n"
             "- Keep paragraphs concise and well-structured"
         ),
     ),
-
     "commercial": PromptTemplate(
         name="commercial",
         system_context=(
             "You are an expert direct-response copywriter with 15 years of experience "
-            "in B2B and B2C sales emails. You know how to craft compelling value "
-            "propositions and drive action without being pushy."
+            "in B2B and B2C sales emails."
         ),
         instruction=(
             "Write a persuasive commercial email. Lead with the strongest benefit. "
-            "Address the recipient's pain points, present the solution clearly, "
-            "include social proof or urgency if relevant, and close with a single "
-            "clear call-to-action."
+            "Close with a single clear call-to-action."
         ),
         style_guidelines=(
-            "- Open with a benefit or problem statement, not a feature\n"
-            "- Use 'you' language — focus on the reader, not the sender\n"
-            "- Include one clear CTA (call-to-action)\n"
-            "- Keep sentences short and punchy\n"
-            "- Use bullet points for benefits if listing more than two\n"
-            "- Create mild urgency without pressure tactics"
+            "- Open with a benefit or problem statement\n"
+            "- Use 'you' language\n"
+            "- Include one clear CTA\n"
+            "- Keep sentences short and punchy"
         ),
     ),
-
     "follow_up": PromptTemplate(
         name="follow_up",
         system_context=(
             "You are a relationship-focused business professional who excels at "
-            "maintaining momentum in conversations without being intrusive. "
-            "Your follow-up emails always feel timely and helpful, never annoying."
+            "maintaining momentum without being intrusive."
         ),
-        instruction=(
-            "Write a follow-up email that references a previous interaction. "
-            "Be concise and respectful of the recipient's time. Gently remind them "
-            "of the value discussed, provide any requested information, and make "
-            "it easy for them to respond or take the next step."
-        ),
+        instruction=("Write a follow-up email. Be concise and respectful of the recipient's time."),
         style_guidelines=(
-            "- Reference the previous contact naturally in the opening line\n"
-            "- Keep the email short — ideally under 150 words\n"
-            "- Offer a clear, low-friction next step\n"
-            "- Do not guilt-trip or pressure — stay positive\n"
-            "- Use a friendly but professional tone"
+            "- Reference the previous contact naturally\n"
+            "- Keep under 150 words\n"
+            "- Offer a clear, low-friction next step"
         ),
     ),
-
     "complaint": PromptTemplate(
         name="complaint",
         system_context=(
             "You are a professional advocate skilled at articulating grievances "
-            "clearly and constructively. You balance firmness with courtesy, "
-            "always focusing on resolution rather than blame."
+            "clearly and constructively."
         ),
-        instruction=(
-            "Write a complaint email that clearly describes the issue, its impact, "
-            "and the desired resolution. Be assertive and factual without being "
-            "aggressive. Maintain a professional tone that demands respect while "
-            "leaving room for a constructive response."
-        ),
+        instruction=("Write a complaint email. Be assertive and factual without being aggressive."),
         style_guidelines=(
-            "- State the issue clearly and factually in the first paragraph\n"
-            "- Describe the impact on the sender (time, cost, inconvenience)\n"
-            "- Specify the desired resolution explicitly\n"
-            "- Set a reasonable response deadline if appropriate\n"
-            "- Avoid emotional language, threats, or insults\n"
-            "- Close with openness to dialogue"
+            "- State the issue clearly in the first paragraph\n"
+            "- Describe the impact\n"
+            "- Specify the desired resolution\n"
+            "- Avoid emotional language"
         ),
     ),
-
     "introduction": PromptTemplate(
         name="introduction",
-        system_context=(
-            "You are a networking expert who crafts memorable first impressions. "
-            "Your introduction emails are warm, specific, and leave the recipient "
-            "wanting to learn more."
-        ),
-        instruction=(
-            "Write an introduction email. Establish who the sender is, why they are "
-            "reaching out to this specific person, and what value the connection could "
-            "bring to both parties. End with a clear, low-commitment next step."
-        ),
+        system_context="You are a networking expert who crafts memorable first impressions.",
+        instruction="Write an introduction email. Establish who the sender is and why they are reaching out.",
         style_guidelines=(
-            "- Open with something specific about the recipient to show research\n"
-            "- Keep background about the sender brief and relevant\n"
-            "- Focus on mutual benefit, not just what the sender wants\n"
-            "- Propose a specific, easy next step (a call, a coffee, a quick reply)\n"
-            "- Tone: warm, confident, not overly formal"
+            "- Open with something specific about the recipient\n"
+            "- Focus on mutual benefit\n"
+            "- Propose a specific, easy next step"
         ),
     ),
-
     "thank_you": PromptTemplate(
         name="thank_you",
-        system_context=(
-            "You are a relationship expert who understands the power of genuine "
-            "appreciation. Your thank-you messages feel personal, specific, and "
-            "never formulaic."
-        ),
-        instruction=(
-            "Write a sincere thank-you email. Be specific about what is being "
-            "appreciated and why it mattered. Make the recipient feel genuinely "
-            "valued. If appropriate, mention how you plan to use their help or "
-            "what positive outcome resulted."
-        ),
+        system_context="You are a relationship expert who understands the power of genuine appreciation.",
+        instruction="Write a sincere thank-you email. Be specific about what is being appreciated.",
         style_guidelines=(
-            "- Be specific — name exactly what you are thankful for\n"
-            "- Share the impact of their help or gesture\n"
-            "- Keep it concise — gratitude does not need to be long\n"
-            "- Avoid generic phrases like 'I just wanted to say thank you'\n"
-            "- Warm, personal tone — this is not a formal letter"
+            "- Name exactly what you are thankful for\n- Share the impact\n- Keep it concise"
         ),
     ),
-
     "cold_outreach": PromptTemplate(
         name="cold_outreach",
         system_context=(
             "You are a growth expert who has sent thousands of cold emails with "
-            "exceptional open and reply rates. You know the first line must hook, "
-            "the value must be crystal clear, and the ask must be tiny."
+            "exceptional open and reply rates."
         ),
         instruction=(
-            "Write a cold outreach email. The opening line must immediately grab "
-            "attention (reference something specific about the recipient or their "
-            "company). State the value proposition in one sentence. Make a small, "
-            "specific ask that is easy to say yes to."
+            "Write a cold outreach email. The opening line must immediately grab attention. "
+            "Make a small, specific ask."
         ),
         style_guidelines=(
-            "- First line: specific observation about recipient (not generic flattery)\n"
-            "- Value prop: one sentence, what's in it for them\n"
-            "- Social proof: one brief reference if available in context\n"
-            "- CTA: ask for something tiny (15 min call, a quick reply, a yes/no)\n"
-            "- Total length: under 100 words ideally\n"
-            "- No attachments mentioned, no lengthy introductions"
+            "- First line: specific observation about recipient\n"
+            "- Value prop: one sentence\n"
+            "- CTA: ask for something tiny\n"
+            "- Total length: under 100 words"
         ),
     ),
-
     "apology": PromptTemplate(
         name="apology",
-        system_context=(
-            "You are a communications specialist in crisis and relationship repair. "
-            "You craft apologies that feel genuine, take full accountability, and "
-            "restore trust through concrete action plans."
-        ),
-        instruction=(
-            "Write a sincere apology email. Take clear accountability without "
-            "making excuses. Acknowledge the impact on the recipient, explain what "
-            "went wrong briefly, and most importantly describe concrete steps being "
-            "taken to prevent recurrence."
-        ),
+        system_context="You are a communications specialist in crisis and relationship repair.",
+        instruction="Write a sincere apology email. Take clear accountability without making excuses.",
         style_guidelines=(
-            "- Open with the apology directly — do not bury it\n"
-            "- Acknowledge the specific impact on the recipient\n"
-            "- Accept responsibility without excessive justification\n"
-            "- State clearly what corrective action is being taken\n"
-            "- Avoid 'if you were offended' — take full ownership\n"
-            "- Close with commitment to the relationship"
+            "- Open with the apology directly\n"
+            "- Acknowledge the specific impact\n"
+            "- State corrective action\n"
+            "- Avoid 'if you were offended'"
         ),
     ),
-
     "invitation": PromptTemplate(
         name="invitation",
-        system_context=(
-            "You are an event communications specialist who creates invitations "
-            "that make recipients feel genuinely excited and personally selected."
-        ),
-        instruction=(
-            "Write an invitation email. Convey the event details clearly "
-            "(what, when, where, why it matters). Create excitement and make the "
-            "recipient feel their presence is valued. Include a clear RSVP instruction."
-        ),
+        system_context="You are an event communications specialist.",
+        instruction="Write an invitation email with clear event details and RSVP instruction.",
         style_guidelines=(
-            "- Lead with the most exciting aspect of the event\n"
-            "- Include all logistics: date, time, location, format\n"
-            "- Explain why the recipient specifically is invited\n"
-            "- Create anticipation with one compelling detail about the experience\n"
-            "- Make the RSVP process simple and clear\n"
-            "- Tone: warm and welcoming"
+            "- Lead with the most exciting aspect\n"
+            "- Include all logistics: date, time, location\n"
+            "- Make the RSVP simple and clear"
         ),
     ),
-
     "informal": PromptTemplate(
         name="informal",
-        system_context=(
-            "You write like a real human being — casual, warm, and conversational. "
-            "Your emails feel like they were written by a friend, not a corporate bot."
-        ),
-        instruction=(
-            "Write a casual, friendly email. Use natural, conversational language. "
-            "Skip the formal structure — write how you would actually talk to someone "
-            "you know. Keep it light and genuine."
-        ),
-        style_guidelines=(
-            "- Use contractions freely (it's, I'm, we'll)\n"
-            "- Short sentences and paragraphs\n"
-            "- First name only in salutation (or none at all)\n"
-            "- Can use casual sign-offs: 'Cheers', 'Talk soon', 'Best'\n"
-            "- No corporate jargon or buzzwords\n"
-            "- A touch of personality is welcome"
-        ),
+        system_context="You write like a real human being — casual, warm, and conversational.",
+        instruction="Write a casual, friendly email using natural conversational language.",
+        style_guidelines=("- Use contractions freely\n- Short sentences\n- No corporate jargon"),
     ),
 }
 
-# Default fallback template
 _DEFAULT_TEMPLATE = _TEMPLATES["formal"]
 
 
 def get_template(email_type: str) -> PromptTemplate:
-    """Return the prompt template for the given email type."""
     return _TEMPLATES.get(email_type, _DEFAULT_TEMPLATE)
 
 
@@ -331,11 +230,14 @@ def build_prompt(
     language: str,
     tone: str | None,
 ) -> str:
-    """Assemble the full prompt string from template + request parameters."""
     tone_clause = f"\n- Tone override: {tone}" if tone else ""
     language_name = {
-        "it": "Italian", "en": "English", "fr": "French",
-        "de": "German", "es": "Spanish", "pt": "Portuguese",
+        "it": "Italian",
+        "en": "English",
+        "fr": "French",
+        "de": "German",
+        "es": "Spanish",
+        "pt": "Portuguese",
     }.get(language, language.upper())
 
     return f"""SYSTEM CONTEXT:
@@ -365,35 +267,39 @@ Respond ONLY with a valid JSON object. No markdown fences, no explanation.
 # AIService
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class AIService:
     """
     Orchestrates AI email generation with full audit logging.
 
-    Usage:
-        service = AIService(db=session, ai=provider)
-        result = await service.generate_and_save(request, user_id)
+    Dual session pattern:
+    - _db       : sessione principale (GeneratedEmail, commit/rollback con la request)
+    - _audit_db : sessione separata (AIRequestLog, commit indipendente)
+
+    Questo garantisce che i log vengano sempre salvati, anche in caso di errore.
     """
 
-    def __init__(self, db: AsyncSession, ai: AIProvider) -> None:
+    def __init__(self, db: AsyncSession, audit_db: AsyncSession, ai: AIProvider) -> None:
         self._db = db
+        self._audit_db = audit_db
         self._ai = ai
+
+    async def _save_request_log(self, log_data: dict) -> AIRequestLog:
+        """
+        Salva il log su una sessione separata con commit immediato.
+        Garantisce la persistenza anche se la sessione principale fa rollback.
+        """
+        request_log = AIRequestLog(**log_data)
+        self._audit_db.add(request_log)
+        await self._audit_db.flush()
+        await self._audit_db.commit()
+        return request_log
 
     async def generate_and_save(
         self,
         request: GenerateEmailRequest,
         user_id: uuid.UUID,
     ) -> GeneratedEmailResponse:
-        """
-        Full pipeline:
-        1. Select prompt template
-        2. Build prompt
-        3. Call AI provider (with error handling)
-        4. Persist AIRequestLog (always, even on error)
-        5. Persist GeneratedEmail (only on success)
-        6. Return response schema
-        """
-        from app.schemas.schemas import GeneratedEmailResponse
-
         template = get_template(request.email_type)
         prompt = build_prompt(
             template=template,
@@ -469,32 +375,31 @@ class AIService:
             else None
         )
 
-        # ── Persist AIRequestLog ──────────────────────────────────────────────
-        request_log = AIRequestLog(
-            user_id=user_id,
-            email_type=request.email_type,
-            prompt_template=template.name,
-            prompt_used=prompt,
-            language=request.language,
-            tone=request.tone,
-            ai_provider=result.provider if result else settings.ai_provider,
-            ai_model=model_name,
-            raw_response=raw_response,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            estimated_cost_usd=estimated_cost,
-            status=status,
-            error_type=error_type,
-            error_message=error_message,
-            duration_ms=duration_ms,
+        # ── Persist AIRequestLog (sessione separata — sempre salvato) ─────────
+        request_log = await self._save_request_log(
+            {
+                "user_id": user_id,
+                "email_type": request.email_type,
+                "prompt_template": template.name,
+                "prompt_used": prompt,
+                "language": request.language,
+                "tone": request.tone,
+                "ai_provider": result.provider if result else settings.ai_provider,
+                "ai_model": model_name,
+                "raw_response": raw_response,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "estimated_cost_usd": estimated_cost,
+                "status": status,
+                "error_type": error_type,
+                "error_message": error_message,
+                "duration_ms": duration_ms,
+            }
         )
-        self._db.add(request_log)
-        await self._db.flush()
 
-        # ── Re-raise if error (log is already saved) ──────────────────────────
+        # ── Re-raise se errore (il log è già salvato in modo sicuro) ─────────
         if result is None:
-            await self._db.commit()
             if status == "rate_limited":
                 raise AIProviderRateLimitError(error_message)
             elif status == "timeout":
@@ -502,7 +407,7 @@ class AIService:
             else:
                 raise AIProviderError(error_message or "Unknown AI error")
 
-        # ── Persist GeneratedEmail ────────────────────────────────────────────
+        # ── Persist GeneratedEmail (sessione principale) ───────────────────────
         email = GeneratedEmail(
             user_id=user_id,
             email_type=request.email_type,
@@ -534,13 +439,11 @@ class AIService:
         user_id: uuid.UUID,
         limit: int = 50,
     ) -> list[AIRequestLog]:
-        """Return recent AI request logs for the user (for debugging / cost review)."""
-        from sqlalchemy import select
         q = (
             select(AIRequestLog)
             .where(AIRequestLog.user_id == user_id)
             .order_by(AIRequestLog.created_at.desc())
             .limit(limit)
         )
-        result = await self._db.execute(q)
+        result = await self._audit_db.execute(q)
         return list(result.scalars().all())

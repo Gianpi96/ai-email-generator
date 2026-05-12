@@ -43,10 +43,6 @@ jobs:
       - name: Lint with ruff
         run: ruff check app/ --select E,F
 
-      - name: Type check with mypy
-        run: mypy app/ --ignore-missing-imports
-        continue-on-error: true
-
       - name: Run tests
         env:
           DATABASE_URL: postgresql+asyncpg://user:password@localhost:5432/email_generator_test
@@ -55,5 +51,4 @@ jobs:
           GROQ_API_KEY: test-key-not-used-in-unit-tests
           APP_ENV: development
           DEBUG: "false"
-        run: |
-          pytest tests/ -v --tb=short --ignore=tests/integration || true
+        run: pytest tests/ -v --tb=short
