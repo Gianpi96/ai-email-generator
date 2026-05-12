@@ -154,8 +154,14 @@ _TEMPLATES: dict[str, PromptTemplate] = {
     ),
     "introduction": PromptTemplate(
         name="introduction",
-        system_context="You are a networking expert who crafts memorable first impressions.",
-        instruction="Write an introduction email. Establish who the sender is and why they are reaching out.",
+        system_context=(
+            "You are a networking expert who crafts memorable "
+            "first impressions."
+        ),
+        instruction=(
+            "Write an introduction email. Establish who the "
+            "sender is and why they are reaching out."
+        ),
         style_guidelines=(
             "- Open with something specific about the recipient\n"
             "- Focus on mutual benefit\n"
@@ -164,8 +170,14 @@ _TEMPLATES: dict[str, PromptTemplate] = {
     ),
     "thank_you": PromptTemplate(
         name="thank_you",
-        system_context="You are a relationship expert who understands the power of genuine appreciation.",
-        instruction="Write a sincere thank-you email. Be specific about what is being appreciated.",
+        system_context=(
+            "You are a relationship expert who understands "
+            "the power of genuine appreciation."
+        ),
+        instruction=(
+            "Write a sincere thank-you email. Be specific about "
+            "what is being appreciated."
+        ),
         style_guidelines=(
             "- Name exactly what you are thankful for\n- Share the impact\n- Keep it concise"
         ),
@@ -189,8 +201,14 @@ _TEMPLATES: dict[str, PromptTemplate] = {
     ),
     "apology": PromptTemplate(
         name="apology",
-        system_context="You are a communications specialist in crisis and relationship repair.",
-        instruction="Write a sincere apology email. Take clear accountability without making excuses.",
+        system_context=(
+            "You are a communications specialist in crisis "
+            "and relationship repair."
+        ),
+        instruction=(
+            "Write a sincere apology email. Take clear "
+            "accountability without making excuses."
+        ),
         style_guidelines=(
             "- Open with the apology directly\n"
             "- Acknowledge the specific impact\n"
