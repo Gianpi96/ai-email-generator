@@ -71,7 +71,8 @@ def _estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> fl
     input_rate = _COST_PER_1M_INPUT.get(model, 2.50)
     output_rate = _COST_PER_1M_OUTPUT.get(model, 10.00)
     return round(
-        (prompt_tokens * input_rate / 1_000_000) + (completion_tokens * output_rate / 1_000_000),
+        (prompt_tokens * input_rate / 1_000_000)
+        + (completion_tokens * output_rate / 1_000_000),
         8,
     )
 
@@ -79,7 +80,6 @@ def _estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> fl
 # ─────────────────────────────────────────────────────────────────────────────
 # Prompt Templates
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 @dataclass(frozen=True)
 class PromptTemplate:
@@ -131,7 +131,9 @@ _TEMPLATES: dict[str, PromptTemplate] = {
             "You are a relationship-focused business professional who excels at "
             "maintaining momentum without being intrusive."
         ),
-        instruction=("Write a follow-up email. Be concise and respectful of the recipient's time."),
+        instruction=(
+            "Write a follow-up email. Be concise and respectful of the recipient's time."
+        ),
         style_guidelines=(
             "- Reference the previous contact naturally\n"
             "- Keep under 150 words\n"
@@ -144,7 +146,9 @@ _TEMPLATES: dict[str, PromptTemplate] = {
             "You are a professional advocate skilled at articulating grievances "
             "clearly and constructively."
         ),
-        instruction=("Write a complaint email. Be assertive and factual without being aggressive."),
+        instruction=(
+            "Write a complaint email. Be assertive and factual without being aggressive."
+        ),
         style_guidelines=(
             "- State the issue clearly in the first paragraph\n"
             "- Describe the impact\n"
@@ -154,13 +158,10 @@ _TEMPLATES: dict[str, PromptTemplate] = {
     ),
     "introduction": PromptTemplate(
         name="introduction",
-        system_context=(
-            "You are a networking expert who crafts memorable "
-            "first impressions."
-        ),
+        system_context="You are a networking expert who crafts memorable first impressions.",
         instruction=(
-            "Write an introduction email. Establish who the "
-            "sender is and why they are reaching out."
+            "Write an introduction email. "
+            "Establish who the sender is and why they are reaching out."
         ),
         style_guidelines=(
             "- Open with something specific about the recipient\n"
@@ -174,12 +175,11 @@ _TEMPLATES: dict[str, PromptTemplate] = {
             "You are a relationship expert who understands "
             "the power of genuine appreciation."
         ),
-        instruction=(
-            "Write a sincere thank-you email. Be specific about "
-            "what is being appreciated."
-        ),
+        instruction="Write a sincere thank-you email. Be specific about what is being appreciated.",
         style_guidelines=(
-            "- Name exactly what you are thankful for\n- Share the impact\n- Keep it concise"
+            "- Name exactly what you are thankful for\n"
+            "- Share the impact\n"
+            "- Keep it concise"
         ),
     ),
     "cold_outreach": PromptTemplate(
@@ -201,13 +201,10 @@ _TEMPLATES: dict[str, PromptTemplate] = {
     ),
     "apology": PromptTemplate(
         name="apology",
-        system_context=(
-            "You are a communications specialist in crisis "
-            "and relationship repair."
-        ),
+        system_context="You are a communications specialist in crisis and relationship repair.",
         instruction=(
-            "Write a sincere apology email. Take clear "
-            "accountability without making excuses."
+            "Write a sincere apology email. "
+            "Take clear accountability without making excuses."
         ),
         style_guidelines=(
             "- Open with the apology directly\n"
@@ -230,7 +227,11 @@ _TEMPLATES: dict[str, PromptTemplate] = {
         name="informal",
         system_context="You write like a real human being — casual, warm, and conversational.",
         instruction="Write a casual, friendly email using natural conversational language.",
-        style_guidelines=("- Use contractions freely\n- Short sentences\n- No corporate jargon"),
+        style_guidelines=(
+            "- Use contractions freely\n"
+            "- Short sentences\n"
+            "- No corporate jargon"
+        ),
     ),
 }
 
@@ -250,12 +251,8 @@ def build_prompt(
 ) -> str:
     tone_clause = f"\n- Tone override: {tone}" if tone else ""
     language_name = {
-        "it": "Italian",
-        "en": "English",
-        "fr": "French",
-        "de": "German",
-        "es": "Spanish",
-        "pt": "Portuguese",
+        "it": "Italian", "en": "English", "fr": "French",
+        "de": "German", "es": "Spanish", "pt": "Portuguese",
     }.get(language, language.upper())
 
     return f"""SYSTEM CONTEXT:
@@ -284,7 +281,6 @@ Respond ONLY with a valid JSON object. No markdown fences, no explanation.
 # ─────────────────────────────────────────────────────────────────────────────
 # AIService
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 class AIService:
     """
@@ -394,27 +390,25 @@ class AIService:
         )
 
         # ── Persist AIRequestLog (sessione separata — sempre salvato) ─────────
-        request_log = await self._save_request_log(
-            {
-                "user_id": user_id,
-                "email_type": request.email_type,
-                "prompt_template": template.name,
-                "prompt_used": prompt,
-                "language": request.language,
-                "tone": request.tone,
-                "ai_provider": result.provider if result else settings.ai_provider,
-                "ai_model": model_name,
-                "raw_response": raw_response,
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens,
-                "estimated_cost_usd": estimated_cost,
-                "status": status,
-                "error_type": error_type,
-                "error_message": error_message,
-                "duration_ms": duration_ms,
-            }
-        )
+        request_log = await self._save_request_log({
+            "user_id": user_id,
+            "email_type": request.email_type,
+            "prompt_template": template.name,
+            "prompt_used": prompt,
+            "language": request.language,
+            "tone": request.tone,
+            "ai_provider": result.provider if result else settings.ai_provider,
+            "ai_model": model_name,
+            "raw_response": raw_response,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "estimated_cost_usd": estimated_cost,
+            "status": status,
+            "error_type": error_type,
+            "error_message": error_message,
+            "duration_ms": duration_ms,
+        })
 
         # ── Re-raise se errore (il log è già salvato in modo sicuro) ─────────
         if result is None:
