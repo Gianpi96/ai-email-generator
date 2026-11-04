@@ -63,9 +63,6 @@ API disponibile su **http://localhost:8000/docs**
 http://localhost:8000/docs
 ```
 
-![Swagger UI](docs/swagger.png)
-
-> Per generare lo screenshot: avvia il progetto e cattura la pagina `/docs`.
 
 ---
 
