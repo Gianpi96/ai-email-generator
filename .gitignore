@@ -84,3 +84,6 @@ migrations/versions/*.pyc
 .Trashes
 ehthumbs.db
 Desktop.ini
+
+# Generated CSV exports
+emails_*.csv
